@@ -1,0 +1,602 @@
+
+async function logout() {
+    await fetch('/api/auth/logout', { method: 'POST' });
+    localStorage.clear();
+    window.location.href = '/login';
+}
+
+async function checkAuth() {
+    try {
+        const res = await fetch('/api/auth/me');
+        if (!res.ok) { window.location.href = '/login'; return null; }
+        const data = await res.json();
+        document.getElementById('nav-role').textContent = data.role.toUpperCase();
+        return data;
+    } catch(e) { window.location.href = '/login'; return null; }
+}
+
+function isActive(path) { return window.location.pathname === path ? 'active' : ''; }
+
+function buildSidebar(role) {
+    const sidebar = document.getElementById('sidebar');
+    const normalizedRole = (role || '').toLowerCase();
+
+    let links = `
+        <div class="section-label">Main</div>
+        <a href="/dashboard" class="${isActive('/dashboard')}"><i class="fas fa-tachometer-alt me-2"></i>Dashboard</a>`;
+
+    if (normalizedRole === 'admin') {
+        links += `
+        <div class="section-label">Admin</div>
+        <a href="/students" class="${isActive('/students')}"><i class="fas fa-users me-2"></i>Students</a>
+        <a href="/camera" class="${isActive('/camera')}"><i class="fas fa-video me-2"></i>Live Camera</a>
+        <a href="/alerts" class="${isActive('/alerts')}"><i class="fas fa-bell me-2"></i>Alerts</a>
+        <a href="/logs" class="${isActive('/logs')}"><i class="fas fa-list me-2"></i>Logs</a>
+        <a href="/blacklist" class="${isActive('/blacklist')}"><i class="fas fa-user-slash me-2"></i>Blacklist</a>`;
+        links += `
+        <a href="#" id="delete-all-students-link" onclick="confirmDeleteAll()"><i class="fas fa-trash-alt me-2"></i>Delete All Students</a>`;
+    } else if (normalizedRole === 'warden') {
+        links += `
+        <div class="section-label">Warden</div>
+        <a href="/students" class="${isActive('/students')}"><i class="fas fa-users me-2"></i>Students</a>
+        <a href="/attendance" class="${isActive('/attendance')}"><i class="fas fa-calendar-check me-2"></i>Attendance</a>
+        <a href="/camera" class="${isActive('/camera')}"><i class="fas fa-video me-2"></i>Live Camera</a>
+        <a href="/alerts" class="${isActive('/alerts')}"><i class="fas fa-bell me-2"></i>Alerts</a>`;
+    } else {
+        // default for unknown roles: limited access
+        links += `
+        <div class="section-label">Explore</div>
+        <a href="/students" class="${isActive('/students')}"><i class="fas fa-users me-2"></i>Students</a>`;
+    }
+
+    sidebar.innerHTML = links;
+}
+
+let webcamState = {
+    stream: null,
+    target: null,
+    capturedBlob: null,
+    captureSid: null
+};
+
+function openWebcam(target, sid = null) {
+    webcamState.target = target;
+    webcamState.captureSid = sid;
+    const wrapper = document.getElementById(target + '-camera-wrapper');
+    const preview = document.getElementById(target + '-preview');
+    const captureBtn = document.getElementById(target + '-capture-btn');
+    const closeBtn = document.getElementById(target + '-close-btn');
+
+    if (!wrapper || !preview || !captureBtn || !closeBtn) return;
+
+    fetch('/api/camera/capture')
+        .then(res => {
+            if (!res.ok) throw new Error('Unable to capture from live camera');
+            return res.blob();
+        })
+        .then(blob => {
+            webcamState.capturedBlob = blob;
+            const url = URL.createObjectURL(blob);
+            preview.src = url;
+            wrapper.classList.remove('d-none');
+            captureBtn.disabled = false;
+            closeBtn.style.display = 'inline-block';
+            if (sid) {
+                // immediate upload for existing row identity
+                const form = new FormData();
+                form.append('image', blob, 'capture.jpg');
+                return fetch(`/api/${target === 'student' ? 'students' : 'blacklist'}/${sid}/face`, { method: 'POST', body: form });
+            }
+            return null;
+        })
+        .then(async res => {
+            if (res) {
+                const data = await res.json();
+                if (!res.ok || data.error) {
+                    throw new Error(data?.error || 'Failed to register face');
+                }
+                alert('Face registered successfully via live camera!');
+                if (target === 'student') await refreshStudents(); else await refreshBlacklist();
+                closeWebcam();
+            }
+        })
+        .catch(err => {
+            if (err.message.includes('Device in use') || err.message.includes('track')) {
+                alert('Camera is used by another process. Close other camera applications or use the server live camera page.');
+            } else {
+                alert('Camera capture failed: ' + err.message);
+            }
+        });
+}
+
+function closeWebcam() {
+    ['student', 'blacklist'].forEach(target => {
+        const wrapper = document.getElementById(target + '-camera-wrapper');
+        const captureBtn = document.getElementById(target + '-capture-btn');
+        const closeBtn = document.getElementById(target + '-close-btn');
+        const preview = document.getElementById(target + '-preview');
+        if (wrapper) wrapper.classList.add('d-none');
+        if (captureBtn) captureBtn.disabled = true;
+        if (closeBtn) closeBtn.style.display = 'none';
+        if (preview) preview.src = '';
+    });
+    webcamState.target = null;
+    webcamState.captureSid = null;
+    webcamState.capturedBlob = null;
+}
+
+function captureWebcamImage(target, sid = null) {
+    const preview = document.getElementById(target + '-preview');
+    if (!preview || !webcamState.capturedBlob) {
+        alert('No captured frame available. Click Open Camera first.');
+        return;
+    }
+
+    if (target === 'student') {
+        document.getElementById('f-image').files = new DataTransfer().files; // override manual upload
+    } else if (target === 'blacklist') {
+        document.getElementById('b-image').files = new DataTransfer().files;
+    }
+
+    if (sid || webcamState.captureSid) {
+        const faceSid = sid || webcamState.captureSid;
+        const form = new FormData();
+        form.append('image', webcamState.capturedBlob, 'capture.jpg');
+        fetch(`/api/${target === 'student' ? 'students' : 'blacklist'}/${faceSid}/face`, { method: 'POST', body: form })
+            .then(r => r.json())
+            .then(data => {
+                if (!data || data.error) throw new Error(data?.error || 'Failed to register face');
+                alert('Face registered successfully via camera!');
+                closeWebcam();
+                if (target === 'student') refreshStudents(); else refreshBlacklist();
+            }).catch(err => alert(err.message));
+    } else {
+        alert('Photo captured. You can now save the record to apply this face image.');
+    }
+}
+
+async function api(url) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('API error');
+    return res.json();
+}
+
+async function loadDashboard() {
+    const user = await checkAuth();
+    if (!user) return;
+    buildSidebar(user.role);
+    document.getElementById('main-content').innerHTML = `
+        <h5 class="mb-4 fw-bold">Dashboard</h5>
+        <div class="row g-3 mb-4">
+            <div class="col-md-3"><div class="card stat-card p-3"><div class="d-flex align-items-center gap-3">
+                <div class="stat-icon bg-primary bg-opacity-10 text-primary">&#128101;</div>
+                <div><div class="text-muted small">Total Students</div><div class="fs-4 fw-bold" id="stat-students">-</div></div>
+            </div></div></div>
+            <div class="col-md-3"><div class="card stat-card p-3"><div class="d-flex align-items-center gap-3">
+                <div class="stat-icon bg-success bg-opacity-10 text-success">&#9989;</div>
+                <div><div class="text-muted small">Present Today</div><div class="fs-4 fw-bold" id="stat-present">-</div></div>
+            </div></div></div>
+            <div class="col-md-3"><div class="card stat-card p-3"><div class="d-flex align-items-center gap-3">
+                <div class="stat-icon bg-danger bg-opacity-10 text-danger">&#128680;</div>
+                <div><div class="text-muted small">Unacked Alerts</div><div class="fs-4 fw-bold" id="stat-alerts">-</div></div>
+            </div></div></div>
+            <div class="col-md-3"><div class="card stat-card p-3"><div class="d-flex align-items-center gap-3">
+                <div class="stat-icon bg-info bg-opacity-10 text-info">&#128203;</div>
+                <div><div class="text-muted small">Total Logs</div><div class="fs-4 fw-bold" id="stat-logs">-</div></div>
+            </div></div></div>
+        </div>
+        <div class="row g-3">
+            <div class="col-md-8"><div class="card border-0 shadow-sm">
+                <div class="card-header bg-white fw-bold">Recent Recognition Logs</div>
+                <div class="card-body p-2" id="recent-logs" style="max-height:400px;overflow-y:auto;"></div>
+            </div></div>
+            <div class="col-md-4"><div class="card border-0 shadow-sm">
+                <div class="card-header bg-white fw-bold">Today's Attendance</div>
+                <div class="card-body p-2" id="today-attendance" style="max-height:400px;overflow-y:auto;"></div>
+            </div></div>
+        </div>`;
+    await refreshDashboard();
+    setInterval(refreshDashboard, 5000);
+}
+
+async function refreshDashboard() {
+    try {
+        const today = new Date().toISOString().split('T')[0];
+        const [stats, logs, att] = await Promise.all([
+            api('/api/dashboard/stats'),
+            api('/api/logs?limit=20'),
+            api('/api/attendance?date=' + today)
+        ]);
+        document.getElementById('stat-students').textContent = stats.total_students;
+        document.getElementById('stat-present').textContent = stats.present_today;
+        document.getElementById('stat-alerts').textContent = stats.unacked_alerts;
+        document.getElementById('stat-logs').textContent = stats.total_logs;
+        document.getElementById('recent-logs').innerHTML = logs.map(l => {
+            const personLabel = l.person_type === 'student' ? (l.student_name || l.person_id) :
+                l.person_type === 'blacklisted' ? (l.blacklist_name || l.person_id) : 'Unknown';
+            return `<div class="log-item badge-${l.person_type}">
+                <strong>${l.person_type}</strong> &middot; ${personLabel}
+                &middot; ${(l.confidence*100).toFixed(1)}%
+                <span class="float-end text-muted">${l.timestamp.split(' ')[1]}</span>
+            </div>`;
+        }).join('');
+        document.getElementById('today-attendance').innerHTML = att.length
+            ? att.map(a => `<div class="log-item badge-student mb-1">
+                <strong>${a.name}</strong> (${a.roll_number})<br>
+                <small>In: ${a.time_in ? a.time_in.split(' ')[1].split('.')[0] : '-'}</small>
+              </div>`).join('')
+            : '<p class="text-muted text-center py-3">No attendance yet today</p>';
+    } catch(e) { console.error(e); }
+}
+
+async function loadStudents() {
+    const user = await checkAuth();
+    if (!user) return;
+    buildSidebar(user.role);
+    document.getElementById('main-content').innerHTML = `
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h5 class="fw-bold mb-0">Students</h5>
+            <button class="btn btn-primary btn-sm" onclick="showAddStudent()"><i class="fas fa-plus me-1"></i>Add Student</button>
+        </div>
+        <div id="add-form" class="card border-0 shadow-sm mb-4 d-none">
+            <div class="card-header bg-white fw-bold">Add New Student</div>
+            <div class="card-body">
+                <div class="row g-2">
+                    <div class="col-md-3"><input class="form-control" id="f-roll" placeholder="Roll Number*"></div>
+                    <div class="col-md-3"><input class="form-control" id="f-name" placeholder="Full Name*"></div>
+                    <div class="col-md-3"><input class="form-control" id="f-email" placeholder="Email"></div>
+                    <div class="col-md-3"><input class="form-control" id="f-phone" placeholder="Phone"></div>
+                    <div class="col-md-3"><input class="form-control" id="f-room" placeholder="Room Number"></div>
+                    <div class="col-md-3"><input class="form-control" id="f-block" placeholder="Hostel Block"></div>
+                    <div class="col-md-3"><input class="form-control" id="f-course" placeholder="Course"></div>
+                    <div class="col-md-3"><input class="form-control" id="f-year" placeholder="Year" type="number"></div>
+                </div>
+                <div class="row g-2 mt-3">
+                    <div class="col-md-4"><input type="file" class="form-control" id="f-image" accept="image/*"></div>
+                    <div class="col-md-8">
+                        <button class="btn btn-outline-secondary btn-sm" onclick="openWebcam('student')">Open Camera</button>
+                        <button class="btn btn-outline-secondary btn-sm ms-2" id="student-capture-btn" onclick="captureWebcamImage('student')" disabled>Capture Photo</button>
+                        <button class="btn btn-outline-danger btn-sm ms-2" id="student-close-btn" onclick="closeWebcam()" style="display:none">Close Camera</button>
+                    </div>
+                </div>
+                <div id="student-camera-wrapper" class="mt-3 d-none">
+                    <img id="student-preview" src="" width="320" height="240" style="border:1px solid #ccc;" />
+                </div>
+                <div class="mt-3">
+                    <button class="btn btn-success btn-sm" onclick="submitStudent()">Save Student</button>
+                    <button class="btn btn-secondary btn-sm ms-2" onclick="document.getElementById('add-form').classList.add('d-none')">Cancel</button>
+                </div>
+            </div>
+        </div>
+        <div class="card border-0 shadow-sm">
+            <div class="card-body p-0">
+                <table class="table table-hover mb-0">
+                    <thead class="table-light"><tr><th>Roll No</th><th>Name</th><th>Room</th><th>Block</th><th>Course</th><th>Actions</th></tr></thead>
+                    <tbody id="students-table"></tbody>
+                </table>
+            </div>
+        </div>`;
+    await refreshStudents();
+}
+
+function showAddStudent() { document.getElementById('add-form').classList.remove('d-none'); }
+
+async function submitStudent() {
+    const data = {
+        roll_number: document.getElementById('f-roll').value,
+        name: document.getElementById('f-name').value,
+        email: document.getElementById('f-email').value,
+        phone: document.getElementById('f-phone').value,
+        room_number: document.getElementById('f-room').value,
+        hostel_block: document.getElementById('f-block').value,
+        course: document.getElementById('f-course').value,
+        year: document.getElementById('f-year').value
+    };
+    if (!data.roll_number || !data.name) { alert('Roll number and name required'); return; }
+    const res = await fetch('/api/students', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data) });
+    const result = await res.json();
+    if (!res.ok) { alert(result.error || 'Failed to add student'); return; }
+
+    const studentId = result.id;
+    const fileInput = document.getElementById('f-image');
+
+    if (fileInput.files.length || (webcamState.target === 'student' && webcamState.capturedBlob)) {
+        const formData = new FormData();
+        if (fileInput.files.length) {
+            formData.append('image', fileInput.files[0]);
+        } else {
+            formData.append('image', webcamState.capturedBlob, 'capture.jpg');
+        }
+        const uploadRes = await fetch('/api/students/' + studentId + '/face', { method: 'POST', body: formData });
+        if (!uploadRes.ok) {
+            const errorData = await uploadRes.json();
+            alert('Student added, but face registration failed: ' + (errorData.error || uploadRes.statusText));
+        }
+    }
+
+    document.getElementById('add-form').classList.add('d-none');
+    closeWebcam();
+    await refreshStudents();
+}
+
+async function refreshStudents() {
+    const students = await api('/api/students');
+    document.getElementById('students-table').innerHTML = students.map(s => `
+        <tr>
+            <td><span class="badge bg-secondary">${s.roll_number}</span></td>
+            <td>${s.name}</td><td>${s.room_number||'-'}</td><td>${s.hostel_block||'-'}</td><td>${s.course||'-'}</td>
+            <td>
+                <label class="btn btn-outline-primary btn-sm" title="Upload face">
+                    <i class="fas fa-camera"></i>
+                    <input type="file" accept="image/*" style="display:none" onchange="uploadFace(${s.id},this)">
+                </label>
+                <button class="btn btn-outline-secondary btn-sm ms-1" title="Capture face with webcam" onclick="openWebcam('student', ${s.id})"><i class="fas fa-video"></i></button>
+                <button class="btn btn-outline-danger btn-sm ms-1" onclick="deleteStudent(${s.id})"><i class="fas fa-trash"></i></button>
+            </td>
+        </tr>`).join('');
+}
+
+async function uploadFace(sid, input) {
+    const file = input.files[0];
+    if (!file) return;
+    const form = new FormData();
+    form.append('image', file);
+    const res = await fetch('/api/students/' + sid + '/face', { method:'POST', body:form });
+    const data = await res.json();
+    alert(res.ok ? 'Face registered!' : data.error);
+}
+
+async function deleteStudent(sid) {
+    if (!confirm('Remove this student?')) return;
+    await fetch('/api/students/' + sid, { method:'DELETE' });
+    await refreshStudents();
+}
+
+async function confirmDeleteAll() {
+    if (!confirm('This will permanently remove ALL students and their data from this copy. Continue?')) return;
+    const res = await fetch('/api/students/delete_all', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) {
+        alert(data.error || 'Failed to delete all students');
+        return;
+    }
+    alert('All students removed');
+    await refreshStudents();
+}
+
+async function loadCamera() {
+    const user = await checkAuth();
+    if (!user) return;
+    buildSidebar(user.role);
+    document.getElementById('main-content').innerHTML = `
+        <h5 class="fw-bold mb-4">Live Camera Feed</h5>
+        <div class="row g-3">
+            <div class="col-md-8"><div class="camera-feed">
+                <img src="/api/camera/stream" alt="Live Feed">
+            </div></div>
+            <div class="col-md-4"><div class="card border-0 shadow-sm h-100">
+                <div class="card-header bg-white fw-bold">Live Detections</div>
+                <div class="card-body p-2" id="live-logs" style="max-height:500px;overflow-y:auto;"></div>
+            </div></div>
+        </div>`;
+    setInterval(async () => {
+        try {
+            const logs = await api('/api/logs?limit=15');
+            document.getElementById('live-logs').innerHTML = logs.map(l => {
+                const personLabel = l.person_type === 'student'
+                    ? (l.student_name || l.person_id || 'Unknown')
+                    : l.person_type === 'blacklisted'
+                        ? (l.blacklist_name || l.person_id || 'Unknown')
+                        : 'Unknown';
+                return `<div class="log-item badge-${l.person_type} mb-1">
+                    <strong>${l.person_type}</strong> &middot; ${personLabel}
+                    &middot; ${(l.confidence*100).toFixed(1)}%
+                    <div style="font-size:0.75rem" class="text-muted">${l.timestamp}</div>
+                </div>`;
+            }).join('');
+        } catch(e) {}
+    }, 2000);
+}
+
+async function loadAlerts() {
+    const user = await checkAuth();
+    if (!user) return;
+    buildSidebar(user.role);
+    document.getElementById('main-content').innerHTML = `
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h5 class="fw-bold mb-0">Security Alerts</h5>
+            <button class="btn btn-outline-success btn-sm" onclick="ackAllUnknownAlerts()">Acknowledge All Unknown</button>
+        </div>
+        <div class="card border-0 shadow-sm">
+            <div class="card-body p-0">
+                <table class="table table-hover mb-0">
+                    <thead class="table-light"><tr><th>Time</th><th>Type</th><th>Person</th><th>Status</th><th>Action</th></tr></thead>
+                    <tbody id="alerts-table"></tbody>
+                </table>
+            </div>
+        </div>`;
+    const alerts = await api('/api/alerts');
+    document.getElementById('alerts-table').innerHTML = alerts.length
+        ? alerts.map(a => {
+            const personLabel = a.alert_type === 'student'
+                ? (a.student_name || a.person_id || 'Unknown')
+                : a.alert_type === 'blacklist'
+                    ? (a.blacklist_name || a.person_id || 'Unknown')
+                    : 'Unknown';
+            return `<tr>
+                <td><small>${a.timestamp}</small></td>
+                <td><span class="badge ${a.alert_type==='blacklist'?'bg-danger':'bg-warning text-dark'}">${a.alert_type}</span></td>
+                <td>${personLabel}</td>
+                <td>${a.acknowledged?'<span class="badge bg-success">Acknowledged</span>':'<span class="badge bg-secondary">Pending</span>'}</td>
+                <td>${!a.acknowledged?'<button class="btn btn-sm btn-outline-success" onclick="ackAlert('+a.id+')">Acknowledge</button>':''}</td>
+              </tr>`;
+        }).join('')
+        : '<tr><td colspan="5" class="text-center text-muted py-4">No alerts</td></tr>';
+}
+
+async function ackAlert(id) {
+    await fetch('/api/alerts/'+id+'/ack', { method:'POST' });
+    await loadAlerts();
+}
+
+async function ackAllUnknownAlerts() {
+    if (!confirm('Acknowledge all unknown alerts?')) return;
+    await fetch('/api/alerts/ack-all?type=unknown', { method:'POST' });
+    await loadAlerts();
+}
+
+async function loadBlacklist() {
+    const user = await checkAuth();
+    if (!user) return;
+    buildSidebar(user.role);
+    document.getElementById('main-content').innerHTML = `
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h5 class="fw-bold mb-0">Blacklisted Persons</h5>
+            <button class="btn btn-primary btn-sm" onclick="showAddBlacklist()"><i class="fas fa-plus me-1"></i>Add Person</button>
+        </div>
+        <div id="blacklist-form" class="card border-0 shadow-sm mb-4 d-none">
+            <div class="card-header bg-white fw-bold">Add Blacklisted Person</div>
+            <div class="card-body">
+                <div class="row g-2">
+                    <div class="col-md-4"><input class="form-control" id="b-name" placeholder="Full Name"></div>
+                    <div class="col-md-4"><input class="form-control" id="b-reason" placeholder="Reason"></div>
+                    <div class="col-md-4"><input type="file" class="form-control" id="b-image" accept="image/*"></div>
+                </div>
+                <div class="row g-2 mt-3">
+                    <div class="col-md-12">
+                        <button class="btn btn-outline-secondary btn-sm" onclick="openWebcam('blacklist')">Open Camera</button>
+                        <button class="btn btn-outline-secondary btn-sm ms-2" id="blacklist-capture-btn" onclick="captureWebcamImage('blacklist')" disabled>Capture Photo</button>
+                        <button class="btn btn-outline-danger btn-sm ms-2" id="blacklist-close-btn" onclick="closeWebcam()" style="display:none">Close Camera</button>
+                    </div>
+                </div>
+                <div id="blacklist-camera-wrapper" class="mt-3 d-none">
+                    <img id="blacklist-preview" src="" width="320" height="240" style="border:1px solid #ccc;" />
+                </div>
+                <div class="mt-3">
+                    <button class="btn btn-success btn-sm" onclick="submitBlacklist()">Save</button>
+                    <button class="btn btn-secondary btn-sm ms-2" onclick="document.getElementById('blacklist-form').classList.add('d-none')">Cancel</button>
+                </div>
+            </div>
+        </div>
+        <div class="card border-0 shadow-sm">
+            <div class="card-body p-0">
+                <table class="table table-hover mb-0">
+                    <thead class="table-light"><tr><th>Name</th><th>Reason</th><th>Added On</th><th>Actions</th></tr></thead>
+                    <tbody id="blacklist-table"></tbody>
+                </table>
+            </div>
+        </div>`;
+    await refreshBlacklist();
+}
+
+function showAddBlacklist() { document.getElementById('blacklist-form').classList.remove('d-none'); }
+
+async function submitBlacklist() {
+    const name = document.getElementById('b-name').value;
+    const reason = document.getElementById('b-reason').value;
+    const imageInput = document.getElementById('b-image');
+    const captured = webcamState.target === 'blacklist' && webcamState.capturedBlob;
+    if (!name || !reason || (!imageInput.files.length && !captured)) { alert('Name, reason and photo required'); return; }
+
+    const form = new FormData();
+    form.append('name', name);
+    form.append('reason', reason);
+    if (imageInput.files.length) {
+        form.append('image', imageInput.files[0]);
+    } else {
+        form.append('image', captured, 'capture.jpg');
+    }
+
+    const res = await fetch('/api/blacklist', { method:'POST', body: form });
+    const data = await res.json();
+    if (!res.ok) { alert(data.error || 'Failed to add blacklisted person'); return; }
+    document.getElementById('blacklist-form').classList.add('d-none');
+    closeWebcam();
+    await refreshBlacklist();
+}
+
+async function refreshBlacklist() {
+    const list = await api('/api/blacklist');
+    document.getElementById('blacklist-table').innerHTML = list.length
+        ? list.map(item => `
+            <tr>
+                <td>${item.name}</td>
+                <td>${item.reason}</td>
+                <td>${new Date(item.created_at).toLocaleString()}</td>
+                <td>
+                    <button class="btn btn-outline-secondary btn-sm" onclick="openWebcam('blacklist', ${item.id})" title="Capture/Update face">📷</button>
+                    <button class="btn btn-outline-danger btn-sm ms-1" onclick="deleteBlacklist(${item.id})">Delete</button>
+                </td>
+            </tr>`).join('')
+        : '<tr><td colspan="4" class="text-center text-muted py-3">No blacklisted persons</td></tr>';
+}
+
+async function deleteBlacklist(id) {
+    if (!confirm('Delete this blacklisted person?')) return;
+    await fetch('/api/blacklist/' + id, { method: 'DELETE' });
+    await refreshBlacklist();
+}
+
+async function loadAttendance() {
+    const user = await checkAuth();
+    if (!user) return;
+    buildSidebar(user.role);
+    const today = new Date().toISOString().split('T')[0];
+    document.getElementById('main-content').innerHTML = `
+        <h5 class="fw-bold mb-4">Attendance Records</h5>
+        <div class="d-flex gap-2 mb-3">
+            <input type="date" id="att-date" class="form-control w-auto" value="${today}">
+            <button class="btn btn-primary btn-sm" onclick="refreshAttendance()">Filter</button>
+        </div>
+        <div class="card border-0 shadow-sm">
+            <div class="card-body p-0">
+                <table class="table table-hover mb-0">
+                    <thead class="table-light"><tr><th>Roll No</th><th>Name</th><th>Date</th><th>Time In</th><th>Time Out</th><th>Status</th></tr></thead>
+                    <tbody id="att-table"></tbody>
+                </table>
+            </div>
+        </div>`;
+    await refreshAttendance();
+}
+
+async function refreshAttendance() {
+    const date = document.getElementById('att-date').value;
+    const records = await api('/api/attendance' + (date ? '?date='+date : ''));
+    document.getElementById('att-table').innerHTML = records.length
+        ? records.map(r => `<tr>
+            <td><span class="badge bg-secondary">${r.roll_number}</span></td>
+            <td>${r.name}</td><td>${r.date}</td>
+            <td>${r.time_in?r.time_in.split(' ')[1].split('.')[0]:'-'}</td>
+            <td>${r.time_out?r.time_out.split(' ')[1].split('.')[0]:'-'}</td>
+            <td><span class="badge bg-success">${r.status}</span></td>
+          </tr>`).join('')
+        : '<tr><td colspan="6" class="text-center text-muted py-4">No records found</td></tr>';
+}
+
+async function loadLogs() {
+    const user = await checkAuth();
+    if (!user) return;
+    buildSidebar(user.role);
+    document.getElementById('main-content').innerHTML = `
+        <h5 class="fw-bold mb-4">Recognition Logs</h5>
+        <div class="card border-0 shadow-sm">
+            <div class="card-body p-0">
+                <table class="table table-hover mb-0">
+                    <thead class="table-light"><tr><th>Timestamp</th><th>Type</th><th>Person ID</th><th>Confidence</th></tr></thead>
+                    <tbody id="logs-table"></tbody>
+                </table>
+            </div>
+        </div>`;
+    const logs = await api('/api/logs?limit=100');
+    document.getElementById('logs-table').innerHTML = logs.map(l => `<tr>
+        <td><small>${l.timestamp}</small></td>
+        <td><span class="badge badge-${l.person_type} px-2 py-1">${l.person_type}</span></td>
+        <td>${l.person_id||'-'}</td>
+        <td>
+            <div class="progress d-inline-flex" style="height:6px;width:80px;vertical-align:middle">
+                <div class="progress-bar ${l.confidence>0.7?'bg-success':'bg-warning'}" style="width:${(l.confidence*100).toFixed(0)}%"></div>
+            </div>
+            <small class="ms-1">${(l.confidence*100).toFixed(1)}%</small>
+        </td>
+    </tr>`).join('');
+}
