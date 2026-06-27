@@ -53,16 +53,20 @@ class CameraService:
 
     def get_annotated_frame(self):
         """Returns frame with face boxes drawn — for live stream."""
-        frame = self.get_frame()
-        if frame is None:
-            return None
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = self.face_cascade.detectMultiScale(
-            gray, scaleFactor=1.1, minNeighbors=5, minSize=(60, 60)
-        )
-        for (x, y, w, h) in faces:
-            cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
-        return frame
+        try:
+            frame = self.get_frame()
+            if frame is None:
+                return None
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = self.face_cascade.detectMultiScale(
+                gray, scaleFactor=1.1, minNeighbors=5, minSize=(60, 60)
+            )
+            for (x, y, w, h) in faces:
+                cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+            return frame
+        except Exception as e:
+            print(f'[CameraService] get_annotated_frame error: {e}')
+            return self.get_frame()
 
     def reload_embeddings(self):
         self.recognizer.load_embeddings_from_db()
@@ -71,33 +75,43 @@ class CameraService:
     def _capture_loop(self):
         last_process_time = 0
         while self.running:
-            ret, frame = self.cap.read()
-            if not ret:
-                print('[CameraService] Frame read failed.')
-                time.sleep(0.1)
-                continue
+            try:
+                ret, frame = self.cap.read()
+                if not ret:
+                    print('[CameraService] Frame read failed.')
+                    time.sleep(0.1)
+                    continue
 
-            with self.lock:
-                self.frame = frame
+                with self.lock:
+                    self.frame = frame
 
-            # Process only 1 FPS to reduce CPU load and avoid lag when multiple faces appear
-            now = time.time()
-            if now - last_process_time >= 1.0:
-                self._process_frame(frame)
-                last_process_time = now
+                # Process only 1 FPS to reduce CPU load and avoid lag when multiple faces appear
+                now = time.time()
+                if now - last_process_time >= 1.0:
+                    try:
+                        self._process_frame(frame)
+                    except Exception as e:
+                        print(f'[CameraService] Error processing frame: {e}')
+                    last_process_time = now
+            except Exception as e:
+                print(f'[CameraService] Capture loop exception: {e}')
+                time.sleep(0.5)
 
     def _process_frame(self, frame):
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = self.face_cascade.detectMultiScale(
-            gray, scaleFactor=1.1, minNeighbors=5, minSize=(80, 80)
-        )
-        if len(faces) == 0:
-            return
+        try:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = self.face_cascade.detectMultiScale(
+                gray, scaleFactor=1.1, minNeighbors=5, minSize=(80, 80)
+            )
+            if len(faces) == 0:
+                return
 
-        x, y, w, h = max(faces, key=lambda rect: rect[2] * rect[3])
-        face_img = frame[y:y+h, x:x+w]
-        result = self.recognizer.recognize(face_img)
-        self._handle_recognition(result)
+            x, y, w, h = max(faces, key=lambda rect: rect[2] * rect[3])
+            face_img = frame[y:y+h, x:x+w]
+            result = self.recognizer.recognize(face_img)
+            self._handle_recognition(result)
+        except Exception as e:
+            print(f'[CameraService] _process_frame error: {e}')
 
     def _handle_recognition(self, result):
         ptype = result['person_type']

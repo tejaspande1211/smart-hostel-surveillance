@@ -18,19 +18,27 @@ def login_required(f):
 
 def generate_frames():
     while True:
-        if camera_service is None:
+        try:
+            if camera_service is None:
+                break
+            frame = camera_service.get_annotated_frame()
+            if frame is None:
+                time.sleep(0.1)
+                continue
+            ok, buffer = cv2.imencode('.jpg', frame)
+            if not ok:
+                time.sleep(0.05)
+                continue
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' +
+                   buffer.tobytes() + b'\r\n')
+        except GeneratorExit:
+            # Client disconnected
             break
-        frame = camera_service.get_annotated_frame()
-        if frame is None:
-            time.sleep(0.1)
+        except Exception as e:
+            print(f'[Camera Route] stream generator error: {e}')
+            time.sleep(0.2)
             continue
-        ok, buffer = cv2.imencode('.jpg', frame)
-        if not ok:
-            time.sleep(0.05)
-            continue
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' +
-               buffer.tobytes() + b'\r\n')
 
 @camera_bp.route('/api/camera/stream')
 @login_required
