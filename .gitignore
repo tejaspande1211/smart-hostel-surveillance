@@ -1,13 +1,15 @@
 ﻿# Virtual environment
 venv/
 
-# Database (contains personal data)
-db/hostel.db
+# ==========================
+# Databases
+# ==========================
+*.db
 
-# Face images (personal data)
-data/known_faces/
-data/unknown_captures/
-data/alert_frames/
+# ==========================
+# Generated / Personal Data
+# ==========================
+hostel_surveillance/data/
 
 # DeepFace model weights
 *.h5
@@ -18,14 +20,16 @@ __pycache__/
 *.pyo
 *.pyd
 .Python
+.pytest_cache/
 
 # Environment variables
 .env
+.env.*
 
 # VS Code
 .vscode/
 
-# Write scripts (not needed by others)
+# Write scripts
 write_files.py
 write_routes.py
 write_frontend.py
