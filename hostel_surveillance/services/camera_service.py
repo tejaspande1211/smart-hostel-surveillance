@@ -1,7 +1,7 @@
 import cv2
 import threading
 import time
-from datetime import datetime
+from time_utils import now_ist
 import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -120,8 +120,8 @@ class CameraService:
 
         # Log every event
         self.db.execute(
-            'INSERT INTO recognition_logs (person_type, person_id, confidence) VALUES (?,?,?)',
-            (ptype, pid, conf)
+            'INSERT INTO recognition_logs (person_type, person_id, confidence, timestamp) VALUES (?,?,?,?)',
+            (ptype, pid, conf, now_ist().strftime('%Y-%m-%d %H:%M:%S'))
         )
         print(f'[Recognition] type={ptype} id={pid} confidence={conf}')
 

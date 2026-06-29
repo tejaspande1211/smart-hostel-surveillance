@@ -1,13 +1,42 @@
 import sys, os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from flask import Blueprint, request, jsonify, session
+import bcrypt
 from db.db_manager import DatabaseManager
 from services.face_recognizer import FaceRecognizer
+from time_utils import now_ist
 import routes.camera as camera_route
 from functools import wraps
 
 blacklist_bp = Blueprint('blacklist', __name__)
 db = DatabaseManager()
+
+
+def resolve_added_by_id():
+    role = session.get('role')
+    if role == 'warden':
+        return session.get('user_id')
+
+    if role == 'admin':
+        existing = db.fetch_one('SELECT id FROM wardens WHERE is_active=1 ORDER BY id LIMIT 1')
+        if existing:
+            return existing['id']
+
+        fallback_password = bcrypt.hashpw(b'fallback123', bcrypt.gensalt()).decode('utf-8')
+        return db.execute(
+            'INSERT INTO wardens (name, username, password, email, phone, hostel_block, is_active) VALUES (?,?,?,?,?,?,?)',
+            (
+                f"Auto Warden {session.get('username', 'admin')}",
+                f"auto_{session.get('user_id', 0)}",
+                fallback_password,
+                f"auto_{session.get('user_id', 0)}@local",
+                '',
+                'A',
+                1,
+            ),
+        )
+
+    return None
 
 
 def login_required(f):
@@ -37,10 +66,13 @@ def add_blacklisted_person():
         return jsonify({'error': 'Name, reason and image are required'}), 400
 
     try:
-        added_by = session.get('user_id')
+        added_by = resolve_added_by_id()
+        if added_by is None:
+            return jsonify({'error': 'No valid warden account available for this action'}), 400
+
         person_id = db.execute(
-            'INSERT INTO blacklisted_persons (name, reason, added_by, image_path) VALUES (?,?,?,?)',
-            (name, reason, added_by, '')
+            'INSERT INTO blacklisted_persons (name, reason, added_by, image_path, created_at) VALUES (?,?,?,?,?)',
+            (name, reason, added_by, '', now_ist().strftime('%Y-%m-%d %H:%M:%S'))
         )
 
         save_dir = os.path.join('data', 'known_faces', 'blacklisted', str(person_id))

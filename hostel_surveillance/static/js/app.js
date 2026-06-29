@@ -17,6 +17,49 @@ async function checkAuth() {
 
 function isActive(path) { return window.location.pathname === path ? 'active' : ''; }
 
+function parseISTDateTime(value) {
+    if (!value) return null;
+    const trimmed = value.trim();
+    const isoLike = trimmed.replace(' ', 'T');
+    const parsed = new Date(isoLike);
+    if (!Number.isNaN(parsed.getTime()) && /[TZ]/.test(trimmed)) {
+        return parsed;
+    }
+    const matches = /^([0-9]{4})-([0-9]{2})-([0-9]{2})[ T]([0-9]{2}):([0-9]{2})(?::([0-9]{2}))?/.exec(trimmed);
+    if (!matches) {
+        return parsed;
+    }
+    const [, year, month, day, hour, minute, second] = matches;
+    return new Date(Date.UTC(
+        Number(year),
+        Number(month) - 1,
+        Number(day),
+        Number(hour),
+        Number(minute) - 330,
+        Number(second || '0')
+    ));
+}
+
+function formatToIST(value, options = {}) {
+    const date = parseISTDateTime(value);
+    if (!date || Number.isNaN(date.getTime())) {
+        return value || '';
+    }
+    return new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', ...options }).format(date);
+}
+
+function formatISTTime(value) {
+    return formatToIST(value, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+}
+
+function formatISTDate(value) {
+    return formatToIST(value, { year: 'numeric', month: '2-digit', day: '2-digit' });
+}
+
+function getTodayInIST() {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
+}
+
 function buildSidebar(role) {
     const sidebar = document.getElementById('sidebar');
     const normalizedRole = (role || '').toLowerCase();
@@ -201,7 +244,7 @@ async function loadDashboard() {
 
 async function refreshDashboard() {
     try {
-        const today = new Date().toISOString().split('T')[0];
+        const today = getTodayInIST();
         const [stats, logs, att] = await Promise.all([
             api('/api/dashboard/stats'),
             api('/api/logs?limit=20'),
@@ -217,13 +260,13 @@ async function refreshDashboard() {
             return `<div class="log-item badge-${l.person_type}">
                 <strong>${l.person_type}</strong> &middot; ${personLabel}
                 &middot; ${(l.confidence*100).toFixed(1)}%
-                <span class="float-end text-muted">${l.timestamp.split(' ')[1]}</span>
+                <span class="float-end text-muted">${formatISTTime(l.timestamp)}</span>
             </div>`;
         }).join('');
         document.getElementById('today-attendance').innerHTML = att.length
             ? att.map(a => `<div class="log-item badge-student mb-1">
                 <strong>${a.name}</strong> (${a.roll_number})<br>
-                <small>In: ${a.time_in ? a.time_in.split(' ')[1].split('.')[0] : '-'}</small>
+                <small>In: ${a.time_in ? formatISTTime(a.time_in) : '-'}</small>
               </div>`).join('')
             : '<p class="text-muted text-center py-3">No attendance yet today</p>';
     } catch(e) { console.error(e); }
@@ -424,7 +467,7 @@ async function loadAlerts() {
                     ? (a.blacklist_name || a.person_id || 'Unknown')
                     : 'Unknown';
             return `<tr>
-                <td><small>${a.timestamp}</small></td>
+                <td><small>${formatToIST(a.timestamp)}</small></td>
                 <td><span class="badge ${a.alert_type==='blacklist'?'bg-danger':'bg-warning text-dark'}">${a.alert_type}</span></td>
                 <td>${personLabel}</td>
                 <td>${a.acknowledged?'<span class="badge bg-success">Acknowledged</span>':'<span class="badge bg-secondary">Pending</span>'}</td>
@@ -522,7 +565,7 @@ async function refreshBlacklist() {
             <tr>
                 <td>${item.name}</td>
                 <td>${item.reason}</td>
-                <td>${new Date(item.created_at).toLocaleString()}</td>
+                <td>${formatToIST(item.created_at)}</td>
                 <td>
                     <button class="btn btn-outline-secondary btn-sm" onclick="openWebcam('blacklist', ${item.id})" title="Capture/Update face">📷</button>
                     <button class="btn btn-outline-danger btn-sm ms-1" onclick="deleteBlacklist(${item.id})">Delete</button>
@@ -566,8 +609,8 @@ async function refreshAttendance() {
         ? records.map(r => `<tr>
             <td><span class="badge bg-secondary">${r.roll_number}</span></td>
             <td>${r.name}</td><td>${r.date}</td>
-            <td>${r.time_in?r.time_in.split(' ')[1].split('.')[0]:'-'}</td>
-            <td>${r.time_out?r.time_out.split(' ')[1].split('.')[0]:'-'}</td>
+            <td>${r.time_in ? formatISTTime(r.time_in) : '-'}</td>
+            <td>${r.time_out ? formatISTTime(r.time_out) : '-'}</td>
             <td><span class="badge bg-success">${r.status}</span></td>
           </tr>`).join('')
         : '<tr><td colspan="6" class="text-center text-muted py-4">No records found</td></tr>';
@@ -589,7 +632,7 @@ async function loadLogs() {
         </div>`;
     const logs = await api('/api/logs?limit=100');
     document.getElementById('logs-table').innerHTML = logs.map(l => `<tr>
-        <td><small>${l.timestamp}</small></td>
+        <td><small>${formatToIST(l.timestamp)}</small></td>
         <td><span class="badge badge-${l.person_type} px-2 py-1">${l.person_type}</span></td>
         <td>${l.person_id||'-'}</td>
         <td>

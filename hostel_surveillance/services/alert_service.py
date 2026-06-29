@@ -10,6 +10,7 @@ from email.mime.image import MIMEImage
 from datetime import datetime, timedelta
 from twilio.rest import Client
 from db.db_manager import DatabaseManager
+from time_utils import now_ist
 from config import (
     SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS,
     WARDEN_EMAIL, ALERT_FRAMES_DIR, UNKNOWN_CAPTURES,
@@ -29,14 +30,14 @@ class AlertService:
         self.last_unknown_alert_time = None
 
     def send_blacklist_alert(self, person_id, frame):
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        timestamp = now_ist().strftime('%Y%m%d_%H%M%S')
         img_path = f'{ALERT_FRAMES_DIR}/blacklist_{timestamp}.jpg'
         cv2.imwrite(img_path, frame)
 
-        # Log alert to DB
+        # Log alert to DB with IST timestamp
         self.db.execute(
-            'INSERT INTO alerts (alert_type, person_id, person_type, image_path) VALUES (?,?,?,?)',
-            ('blacklist', person_id, 'blacklisted', img_path)
+            'INSERT INTO alerts (alert_type, person_id, person_type, image_path, timestamp) VALUES (?,?,?,?,?)',
+            ('blacklist', person_id, 'blacklisted', img_path, now_ist().strftime('%Y-%m-%d %H:%M:%S'))
         )
 
         # Get blacklist info
@@ -45,16 +46,17 @@ class AlertService:
         )
         if person:
             subject = f'ALERT: Restricted Person Detected - {person["name"]}'
+            now_str = now_ist().strftime('%Y-%m-%d %H:%M:%S')
             body = (
                 'SECURITY ALERT\n\n'
                 'A restricted/blacklisted person entered the area.\n'
                 f'Name: {person["name"]}\n'
                 f'Reason: {person["reason"]}\n'
-                f'Time: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}\n\n'
+                f'Time: {now_str}\n\n'
                 'Please respond immediately.'
             )
             email_sent = self._send_email(WARDEN_EMAIL, subject, body, img_path)
-            sms_sent = self._send_sms(f'RESTRICTED PERSON ENTERED: {person["name"]} at {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
+            sms_sent = self._send_sms(f'RESTRICTED PERSON ENTERED: {person["name"]} at {now_str}')
             self.db.execute(
                 'UPDATE alerts SET email_sent=?, sms_sent=? WHERE image_path=?',
                 (int(email_sent), int(sms_sent), img_path)
@@ -62,13 +64,13 @@ class AlertService:
         print(f'[Alert] Blacklist alert logged for person_id={person_id}')
 
     def log_unknown(self, frame):
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        timestamp = now_ist().strftime('%Y%m%d_%H%M%S')
         img_path = f'{UNKNOWN_CAPTURES}/unknown_{timestamp}.jpg'
         cv2.imwrite(img_path, frame)
 
         alert_id = self.db.execute(
-            'INSERT INTO alerts (alert_type, person_type, image_path) VALUES (?,?,?)',
-            ('unknown', 'unknown', img_path)
+            'INSERT INTO alerts (alert_type, person_type, image_path, timestamp) VALUES (?,?,?,?)',
+            ('unknown', 'unknown', img_path, now_ist().strftime('%Y-%m-%d %H:%M:%S'))
         )
 
         if self._should_send_unknown_notification():
@@ -92,15 +94,16 @@ class AlertService:
         return False
 
     def _send_unknown_alert(self, alert_id, img_path):
+        now_str = now_ist().strftime('%Y-%m-%d %H:%M:%S')
         subject = 'ALERT: Unknown Person Detected'
         body = (
             'SECURITY ALERT\n\n'
             'An unknown/unrestricted person has been detected in multiple frames.\n'
-            f'Time: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}.\n\n'
+            f'Time: {now_str}.\n\n'
             'Please review the capture and acknowledge the alert.'
         )
         email_sent = self._send_email(WARDEN_EMAIL, subject, body, img_path)
-        sms_sent = self._send_sms(f'UNKNOWN PERSON ENTERED at {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}.')
+        sms_sent = self._send_sms(f'UNKNOWN PERSON ENTERED at {now_str}.')
         self.db.execute(
             'UPDATE alerts SET email_sent=?, sms_sent=? WHERE id=?',
             (int(email_sent), int(sms_sent), alert_id)
